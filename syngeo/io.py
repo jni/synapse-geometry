@@ -13,7 +13,7 @@ from ray import imio, evaluate, morpho
 def add_anything(a, b):
     return a + b
 
-def write_synapse_to_vtk(a, coords, fn, im=None, margin=None, center='mean'):
+def write_synapse_to_vtk(a, coords, fn, im=None, margin=None):
     """Output neuron shapes around pre- and post-synapse coordinates.
     
     The coordinate array is a (n+1) x m array, where n is the number of 
@@ -22,7 +22,11 @@ def write_synapse_to_vtk(a, coords, fn, im=None, margin=None, center='mean'):
     """
     neuron_ids = a[zip(*coords)]
     mean_coords = coords.mean(axis=0).astype(np.uint)
-    a = get_box(a, mean_coords, margin)
+    write_neurons_to_vtk(a, neuron_ids, mean_coords, fn, im, margin)
+
+def write_neurons_to_vtk(a, ids, center, fn, im=None, margin=None):
+    """Output neuron shapes around a center-point, given neuron ids."""
+    a = get_box(a, center, margin)
     synapse_volume = reduce(add_anything, 
         [(i+1)*(a==j) for i, j in enumerate(neuron_ids)])
     imio.write_vtk(synapse_volume.astype(np.uint8), fn)
@@ -30,6 +34,33 @@ def write_synapse_to_vtk(a, coords, fn, im=None, margin=None, center='mean'):
         im = get_box(im, mean_coords, margin)
         imio.write_vtk(im, 
             os.path.join(os.path.dirname(fn), 'image.' + os.path.basename(fn)))
+
+def write_all_synapses_to_vtk(neurons, list_of_coords, fn, im, margin=None,
+                                                            single_pairs=True):
+    for i, coords in enumerate(list_of_coords):
+        if single_pairs:
+            pre = coords[0]
+            for j, post in enumerate(coords[1:]):
+                pair_coords = np.concatenate(
+                    (pre[np.newaxis, :], post[np.newaxis, :]), axis=0)
+                cfn = fn%(i, j)
+                write_synapse_to_vtk(neurons, pair_coords, cfn, im, margin)
+        else:
+            cfn = fn%i
+            write_synapse_to_vtk(neurons, coords, cfn, im, margin)
+
+def write_all_candidates_to_vtk(neurons, pairs, fn, im, threshold=350,
+                                                    scale=10, margin=100):
+    _, false_candidates, true_ids, _ = \
+        candidate_postsynaptics(neurons, pairs, threshold, scale)
+    for i, (pre, posts), fcs, trues in \
+                    enumerate(zip(pairs, false_candidates, true_ids):
+        truth = [True]*len(trues) + [False]*len(fcs)
+        psds = trues + fcs
+        pre_id = neurons[tuple(pre)]
+        for j, (psd, t) in enumerate(zip(psds, truth)):
+            cfn = fn % (i, j, int(t))
+            write_neurons_to_vtk(neurons, [pre_id, psd], pre, cfn, im, margin)
 
 def all_sites(synapses):
     return list(it.chain(*tbar_post_pairs_to_arrays(synapses)))
@@ -153,78 +184,3 @@ def raveler_to_numpy_coord_transform(coords, t=(2, 1, 0), s=(1, -1, 1)):
     coords = np.array(coords)
     return coords[:, t]*s
 
-def write_all_synapses_to_vtk(neurons, list_of_coords, fn, im, margin=None,
-                                                            single_pairs=True):
-    for i, coords in enumerate(list_of_coords):
-        if single_pairs:
-            pre = coords[0]
-            for j, post in enumerate(coords[1:]):
-                pair_coords = np.concatenate(
-                    (pre[np.newaxis, :], post[np.newaxis, :]), axis=0)
-                cfn = fn%(i, j)
-                write_synapse_to_vtk(neurons, pair_coords, cfn, im, margin)
-        else:
-            cfn = fn%i
-            write_synapse_to_vtk(neurons, coords, cfn, im, margin)
-
-def write_candidates_to_vtk(a, pairs, fn, im, margin=None, threshold=250, 
-        scale=10):
-    ds = []
-    for pre, posts in pairs:
-        for post in posts:
-            ds.append(scale * euclidean_distance(pre, post))
-    maxd = max(ds)
-    v = volume_presynapse_view(synapses, a.shape)
-    for i, (pre, posts) in enumerate(pairs):
-        d = scale * distance_transform(v != i+1)
-        pre_id = a[tuple(pre)]
-        post_ids = a[tuple(posts.T)]
-        post_ds = d
-    for pre, posts in pairs:
-        local_ids = get_box(a, pre, maxd/scale)
-        local_syn = get_box(v, pre, maxd/scale)
-    candidates, false_candidates, posts, true_candidates = \
-        candidate_postsynaptics(a, pairs, threshold, scale)
-    candidates = []
-    false_candidates = []
-    true_ids = []
-    true_candidates = []
-    for i, (pre, posts) in enumerate(synapses):
-        pre_id = a[tuple(pre)]
-        post_ids = a[tuple(posts.T)]
-        local_ids = get_box(a, pre, threshold/scale)
-        local_syn = get_box(v, pre, threshold/scale)
-        pix = scale * distance_transform(local_syn != i+1) < threshold
-        cand = np.setdiff1d(np.unique(local_ids[pix]), np.array([pre_id]))
-        candidates.append(cand)
-        false_candidates.append(np.setdiff1d(cand, post_ids))
-        true_ids.append(post_ids)
-        true_candidates.append(np.setdiff1d(post_ids, cand))
-    for i, coords in enumerate(list_of_coords):
-        pre = coords[0]
-        for j, post in enumerate(coords[1:]):
-            pair_coords = np.concatenate(
-                (pre[np.newaxis, :], post[np.newaxis, :]), axis=0)
-            pre_id = a[tuple(pre)]
-            post_id = a[tuple(post)]
-
-def write_synapse_to_vtk(neurons, coords, fn, im=None, margin=None):
-    """Output neuron shapes around pre- and post-synapse coordinates.
-    
-    The coordinate array is a (n+1) x m array, where n is the number of 
-    post-synaptic sites (fly neurons are polyadic) and m = neurons.ndim, the
-    number of dimensions of the image.
-    """
-    neuron_ids = neurons[zip(*coords)]
-    mean_coords = coords.mean(axis=0).astype(np.uint)
-    neurons = get_box(neurons, mean_coords, margin)
-    synapse_volume = reduce(add_anything, 
-        [(i+1)*(neurons==j) for i, j in enumerate(neuron_ids)])
-    imio.write_vtk(synapse_volume.astype(np.uint8), fn)
-    if im is not None:
-        im = get_box(im, mean_coords, margin)
-        imio.write_vtk(im, 
-            os.path.join(os.path.dirname(fn), 'image.' + os.path.basename(fn)))
-
-def candidate_postsynaptics(a, synapses, threshold=350, scale=10):
-    return candidates, false_candidates, true_ids, true_candidates
